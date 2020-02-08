@@ -11,10 +11,10 @@
     .OUTPUTS
         JSON file with the name <PBIT original file name>.json
     .NOTES
-        Version:        1.0
+        Version:        1.1
         Author:         Michal Dvorak (@nolockcz)
-        Creation Date:  01.01.2020
-        Purpose/Change: Initial script development
+        Creation Date:  07.02.2020
+        Purpose/Change: Fixed a bug with empty annotations
 #>
 
 function HasProperty($object, $propertyName) {
@@ -55,21 +55,23 @@ function ParseItems ($xmlBodyObject, $queries) {
         $lastAnalysisServicesFormulaText = $item.StableEntries.Entry | Where-Object { $_.Type -eq "LastAnalysisServicesFormulaText" } | ForEach-Object { $_.Value }        
         if ($lastAnalysisServicesFormulaText) {
             $formulaJsonObject = ConvertFrom-Json ($lastAnalysisServicesFormulaText.Substring(1))
-            $queryBody = $formulaJsonObject.RootFormulaText            
+            $queryBody = $formulaJsonObject.RootFormulaText
         }
         
         # create a query object - used later when creating a dataflow objects
         if (!(HasProperty $queries $queryName)) {
+            $metadata = New-Object -TypeName psobject
+            $metadata | Add-Member -MemberType NoteProperty -Name queryId -Value (New-Guid) # every query gets its GUID
+            $metadata | Add-Member -MemberType NoteProperty -Name queryName -Value $queryName # query name
+            $metadata | Add-Member -MemberType NoteProperty -Name loadEnabled -Value $loadEnabled # is load enabled?
+            $metadata | Add-Member -MemberType NoteProperty -Name queryGroupId -Value $queryGroupId # group ID
+            
             $queryObject = @{
                 queryName = $queryName
                 queryBody = $queryBody
-                metadata  = @{
-                    queryId      = (New-Guid)     # every query gets its GUID
-                    queryName    = $queryName     # query name
-                    loadEnabled  = $loadEnabled   # is load enabled?
-                    queryGroupId = $queryGroupId  # group ID
-                }
+                metadata = $metadata    
             }
+
             $queries | Add-Member -MemberType NoteProperty -Name $queryName -Value $queryObject
         }
         
@@ -226,7 +228,7 @@ function GenerateAnnotations($queries) {
             Therefore, I use groupIDs as names and no parentIDs. Your task is to rename the groups in Power BI Dataflow UI back to the original names.
     #>
     $values = @()
-    $queries | ForEach-Object {
+    $queries | Where-Object { $null -ne $_.metadata.queryGroupId } | ForEach-Object {
         $valueAsObject = @{
             id          = $_.metadata.queryGroupId
             name        = $_.metadata.queryGroupId # the name is unknown because it is encrypted, I use just the group ID instead of it
@@ -297,15 +299,18 @@ function GenerateMigrationString($fileName) {
     #>
     $queries = ParseQueriesFromPbit($fileName)    
 
-    $migrationObject = @{
-        name         = ($fileName)
-        description  = ""
-        version      = "1.0"
-        culture      = "de-DE"
-        modifiedTime = "2019-11-29T10:16:45.5568589+00:00"
-        "pbi:mashup" = (GeneratePbiMashup($queries))
-        entities     = (GenerateEntities($queries))
-        annotations  = @((GenerateAnnotations($queries)))
+    $migrationObject = New-Object -TypeName psobject
+    $migrationObject | Add-Member -MemberType NoteProperty -Name "name"  -Value $fileName
+    $migrationObject | Add-Member -MemberType NoteProperty -Name "description" -Value ""
+    $migrationObject | Add-Member -MemberType NoteProperty -Name "version" -Value "1.0"
+    $migrationObject | Add-Member -MemberType NoteProperty -Name "culture" -Value "de-DE"
+    $migrationObject | Add-Member -MemberType NoteProperty -Name "modifiedTime" -Value (Get-Date -Format o)
+    $migrationObject | Add-Member -MemberType NoteProperty -Name "pbi:mashup" -Value (GeneratePbiMashup($queries))
+    $migrationObject | Add-Member -MemberType NoteProperty -Name "entities" -Value @(GenerateEntities($queries))
+    
+    $annotations = @(GenerateAnnotations($queries))
+    if ($annotations.Count -ne 0) {
+        $migrationObject | Add-Member -MemberType NoteProperty -Name "annotations" -Value @($annotations)
     }
 
     $migrationString = (ConvertTo-Json $migrationObject -Depth 5).ToString().Replace("\\", "\")
@@ -314,7 +319,7 @@ function GenerateMigrationString($fileName) {
 }
 
 # name of the input PBIT file
-$fileName = "BaseIT Dataset v1.2.pbit"
+$fileName = "Test Dataset.pbit"
 # name of the output JSON file
 $jsonOutputFileName = $fileName + ".json"
 
